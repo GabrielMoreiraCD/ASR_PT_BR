@@ -27,8 +27,6 @@ def parse_args():
     p.add_argument("--no_numbers", action="store_true", default=False)
     p.add_argument("--allow_apostrophe", action="store_true", default=True)
     p.add_argument("--no_apostrophe", action="store_true", default=False)
-
-    # para acelerar: calcula duração só em amostra
     p.add_argument("--duration_sample_n", type=int, default=2000)
     return p.parse_args()
 
