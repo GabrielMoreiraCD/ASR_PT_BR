@@ -1,0 +1,13 @@
+# dados pesados
+data/raw_calls/
+outputs/
+.hf/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# venv / conda
+.env/
+.venv/

@@ -1,0 +1,33 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  PYTHON_VERSION: '3.10'
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(PYTHON_VERSION)'
+
+- script: |
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+  displayName: 'Install dependencies'
+
+- script: |
+    python src/prep_dataset.py \
+      --csv_path data/labels/metadata_train_final.csv \
+      --audio_root data/raw_calls \
+      --run_dir outputs/asr_runs/run_latest
+  displayName: 'Prepare dataset'
+
+- script: |
+    python src/train_asr.py \
+      --run_dir outputs/asr_runs/run_latest \
+      --batch_size 1 \
+      --grad_accum 16 \
+      --num_train_epochs 1
+  displayName: 'Train ASR (CPU)'
