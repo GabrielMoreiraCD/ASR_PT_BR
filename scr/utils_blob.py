@@ -1,5 +1,4 @@
 #Script para para pegar as gravacoes do BD e salvar em cache por lote
-import os
 import hashlib
 from pathlib import Path
 from typing import Optional, Tuple

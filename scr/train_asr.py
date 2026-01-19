@@ -1,6 +1,5 @@
 #Treinamento de ASR_PT_BR usando Wav2vec, treinado com audios COORA e Reunioes_Luza
 import os
-import sys
 import json
 import time
 import argparse
@@ -191,9 +190,9 @@ def main():
     device = torch.device("cpu")
     print(f"[train] device: {device}")
 
-    train_df = pd.read_csv(splits_dir / "train.csv")
-    valid_df = pd.read_csv(splits_dir / "valid.csv")
-    test_df  = pd.read_csv(splits_dir / "test.csv")
+    train_df = pd.read_parquet(splits_dir / "train.parquet")
+    valid_df = pd.read_parquet(splits_dir / "valid.parquet")
+    test_df  = pd.read_parquet(splits_dir / "test.parquet")
 
     if args.max_train_samples and args.max_train_samples > 0:
         train_df = train_df.sample(args.max_train_samples, random_state=42)

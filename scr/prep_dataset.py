@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import argparse
 from pathlib import Path
@@ -76,9 +75,9 @@ def main():
         stratify=stratify_train
     )
 
-    train_df.to_csv(splits_dir / "train.csv", index=False)
-    valid_df.to_csv(splits_dir / "valid.csv", index=False)
-    test_df.to_csv(splits_dir / "test.csv", index=False)
+    train_df.to_parquet(splits_dir / "train.parquet", index=False)
+    valid_df.to_parquet(splits_dir / "valid.parquet", index=False)
+    test_df.to_parquet(splits_dir / "test.parquet", index=False)
 
     # estatísticas rápidas
     stats = {
