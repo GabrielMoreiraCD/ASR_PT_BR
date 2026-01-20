@@ -1,12 +1,18 @@
+# prep_dataset.py
+
+from __future__ import annotations
+
 import os
 import json
 import argparse
 from pathlib import Path
+
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from utils_text import normalize_text_ptbr
 from utils_audio import safe_audio_duration_sec
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -24,10 +30,12 @@ def parse_args():
 
     p.add_argument("--allow_numbers", action="store_true", default=True)
     p.add_argument("--no_numbers", action="store_true", default=False)
-    p.add_argument("--allow_apostrophe", action="store_true", default=True)
+    p.add_argument("--allow_apostrophe", action="store_true", default=False)
     p.add_argument("--no_apostrophe", action="store_true", default=False)
+
     p.add_argument("--duration_sample_n", type=int, default=2000)
     return p.parse_args()
+
 
 def main():
     args = parse_args()
@@ -45,14 +53,18 @@ def main():
     allow_numbers = args.allow_numbers and (not args.no_numbers)
     allow_apostrophe = args.allow_apostrophe and (not args.no_apostrophe)
 
-    print(f"[prep] project_root: {project_root}")
     print(f"[prep] csv_path: {csv_path}")
     print(f"[prep] audio_root: {audio_root}")
     print(f"[prep] run_dir: {run_dir}")
     print(f"[prep] allow_numbers={allow_numbers} allow_apostrophe={allow_apostrophe}")
 
     df = pd.read_csv(csv_path)
-    df = df[df["variety"].astype(str).str.lower() == "pt_br"].copy()
+    # filtro idioma
+    if "variety" in df.columns:
+        df = df[df["variety"].astype(str).str.lower() == "pt_br"].copy()
+
+    if "file_path" not in df.columns or "text" not in df.columns:
+        raise RuntimeError("CSV precisa conter colunas: file_path, text (e variety opcional).")
 
     df["abs_path"] = df["file_path"].apply(lambda p: str((audio_root / str(p)).resolve()))
     df["text_norm"] = df["text"].apply(lambda t: normalize_text_ptbr(t, allow_numbers=allow_numbers, allow_apostrophe=allow_apostrophe))
@@ -72,14 +84,13 @@ def main():
         train_df,
         test_size=args.valid_size / (1.0 - args.test_size),
         random_state=args.seed,
-        stratify=stratify_train
+        stratify=stratify_train,
     )
 
     train_df.to_parquet(splits_dir / "train.parquet", index=False)
     valid_df.to_parquet(splits_dir / "valid.parquet", index=False)
     test_df.to_parquet(splits_dir / "test.parquet", index=False)
 
-    # estatísticas rápidas
     stats = {
         "n_total": int(len(df)),
         "n_train": int(len(train_df)),
@@ -88,27 +99,28 @@ def main():
         "min_text_len": int(train_df["text_norm"].str.len().min()),
         "max_text_len": int(train_df["text_norm"].str.len().max()),
         "mean_text_len": float(train_df["text_norm"].str.len().mean()),
-        "allow_numbers": allow_numbers,
-        "allow_apostrophe": allow_apostrophe,
+        "allow_numbers": bool(allow_numbers),
+        "allow_apostrophe": bool(allow_apostrophe),
     }
 
-    # duração em amostra
     sample_n = min(args.duration_sample_n, len(train_df))
     if sample_n > 0:
         sample_paths = train_df["abs_path"].sample(sample_n, random_state=args.seed).tolist()
         durs = [safe_audio_duration_sec(p) for p in sample_paths]
-        durs = [d for d in durs if d == d]  # remove NaN
+        durs = [d for d in durs if d == d]
         if durs:
+            durs_sorted = sorted(durs)
             stats.update({
                 "duration_sample_n": int(sample_n),
-                "duration_mean_sec": float(sum(durs) / len(durs)),
-                "duration_p95_sec": float(sorted(durs)[int(0.95 * (len(durs)-1))]),
+                "duration_mean_sec": float(sum(durs_sorted) / len(durs_sorted)),
+                "duration_p95_sec": float(durs_sorted[int(0.95 * (len(durs_sorted) - 1))]),
             })
 
     with open(run_dir / "prep_stats.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
     print("[prep] saved splits + prep_stats.json")
+
 
 if __name__ == "__main__":
     main()

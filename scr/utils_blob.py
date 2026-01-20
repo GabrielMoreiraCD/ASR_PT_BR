@@ -1,3 +1,4 @@
+#utils_blob.py
 #Script para para pegar as gravacoes do BD e salvar em cache por lote
 import hashlib
 from pathlib import Path

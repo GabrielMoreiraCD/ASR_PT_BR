@@ -1,4 +1,5 @@
-#Treinamento de ASR_PT_BR usando Wav2vec, treinado com audios COORA e Reunioes_Luza
+#train_asr.py
+from __future__ import annotations
 import os
 import json
 import time
@@ -7,15 +8,6 @@ import inspect
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Union, Optional
-
-os.environ["DATASETS_DISABLE_MULTIPROCESSING"] = "1"
-
-PROJECT_ROOT_DEFAULT = Path(__file__).resolve().parents[1]
-HF_HOME = PROJECT_ROOT_DEFAULT / ".hf"
-HF_HOME.mkdir(parents=True, exist_ok=True)
-os.environ["HF_HOME"] = str(HF_HOME)
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 import numpy as np
 import pandas as pd
@@ -35,11 +27,20 @@ import evaluate
 
 from utils_text import build_vocab_from_texts, normalize_text_ptbr
 from utils_audio import load_resample_mono, TARGET_SR
-from utils_blob import download_blob_to_cache
+from utils_onedrive import download_onedrive_to_cache
+
+
+os.environ["DATASETS_DISABLE_MULTIPROCESSING"] = "1"
+
+PROJECT_ROOT_DEFAULT = Path(__file__).resolve().parents[1]
+HF_HOME = PROJECT_ROOT_DEFAULT / ".hf"
+HF_HOME.mkdir(parents=True, exist_ok=True)
+os.environ["HF_HOME"] = str(HF_HOME)
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 wer_metric = evaluate.load("wer")
 cer_metric = evaluate.load("cer")
-
 processor: Optional[Wav2Vec2Processor] = None
 
 
@@ -53,35 +54,25 @@ def fail_fast_dependency_checks():
         ) from e
 
 
-def is_blob_uri(x: str) -> bool:
-    return isinstance(x, str) and x.startswith("blob://")
+def is_onedrive_uri(x: str) -> bool:
+    return isinstance(x, str) and x.startswith("onedrive://")
 
 
 @dataclass
 class DataCollatorCTCOnTheFly:
     processor: Wav2Vec2Processor
-    cache_dir: Path
+    media_cache_dir: Path
+    wav_cache_dir: Path
     padding: Union[bool, str] = True
     max_audio_seconds: float = 12.0
     min_audio_seconds: float = 0.2
 
-    # Blob Autorization - tenho que colocar em um .env
-    connection_string_env: str = "AZURE_STORAGE_CONNECTION_STRING"
-
-    def _get_local_path(self, uri_or_path: str) -> str:
-        if is_blob_uri(uri_or_path):
-            conn = os.environ.get(self.connection_string_env, "").strip()
-            if not conn:
-                raise RuntimeError(
-                    f"Missing env var {self.connection_string_env}. "
-                    "Set it as a secret variable in Azure DevOps."
-                )
-            local = download_blob_to_cache(
-                blob_uri=uri_or_path,
-                cache_dir=self.cache_dir,
-                connection_string=conn,
-            )
-            return str(local)
+    def _resolve_to_local(self, uri_or_path: str) -> str:
+        # 1) OneDrive -> baixa MP4/arquivo para cache
+        if is_onedrive_uri(uri_or_path):
+            local_media = download_onedrive_to_cache(uri_or_path, cache_dir=self.media_cache_dir)
+            return str(local_media)
+        # 2) Local já existente
         return uri_or_path
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
@@ -92,10 +83,11 @@ class DataCollatorCTCOnTheFly:
         texts: List[str] = []
 
         for f in features:
-            local_path = self._get_local_path(f["audio"])
-            wav = load_resample_mono(local_path, target_sr=TARGET_SR)
+            local_media_path = self._resolve_to_local(f["audio"])
+            wav = load_resample_mono(local_media_path, target_sr=TARGET_SR, cache_wav_dir=self.wav_cache_dir)
             if wav is None:
                 continue
+
             n = len(wav)
             if n < min_len:
                 continue
@@ -141,40 +133,44 @@ def compute_metrics(pred):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--project_root", type=str, default=str(PROJECT_ROOT_DEFAULT))
-    p.add_argument("--run_dir", type=str, required=True)
-
+    p.add_argument("--run_dir", type=str, required=True).
     p.add_argument("--base_model", type=str, default="freds0/distil-whisper-large-v3-ptbr")
+
     p.add_argument("--max_train_samples", type=int, default=0)
     p.add_argument("--max_valid_samples", type=int, default=0)
     p.add_argument("--max_test_samples", type=int, default=0)
 
-    # texto
     p.add_argument("--allow_numbers", action="store_true", default=True)
     p.add_argument("--no_numbers", action="store_true", default=False)
     p.add_argument("--allow_apostrophe", action="store_true", default=False)
     p.add_argument("--no_apostrophe", action="store_true", default=False)
 
-    # treino CPU 
+    # CPU-friendly
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--grad_accum", type=int, default=16)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--num_train_epochs", type=int, default=2)
     p.add_argument("--warmup_steps", type=int, default=500)
+
     p.add_argument("--eval_steps", type=int, default=500)
     p.add_argument("--save_steps", type=int, default=500)
     p.add_argument("--logging_steps", type=int, default=50)
+
     p.add_argument("--freeze_feature_encoder", action="store_true", default=True)
     p.add_argument("--num_workers", type=int, default=2)
+
     p.add_argument("--max_audio_seconds", type=float, default=12.0)
     p.add_argument("--min_audio_seconds", type=float, default=0.2)
-    p.add_argument("--audio_cache_dir", type=str, default=str(PROJECT_ROOT_DEFAULT / "cache" / "audio"))
+
+    p.add_argument("--media_cache_dir", type=str, default=str(PROJECT_ROOT_DEFAULT / "cache" / "media"))
+    p.add_argument("--wav_cache_dir", type=str, default=str(PROJECT_ROOT_DEFAULT / "cache" / "wav"))
     return p.parse_args()
+
 
 def main():
     global processor
     args = parse_args()
     fail_fast_dependency_checks()
-
     run_dir = Path(args.run_dir).resolve()
     splits_dir = run_dir / "splits"
     vocab_dir = run_dir / "vocab"
@@ -201,7 +197,6 @@ def main():
     if args.max_test_samples and args.max_test_samples > 0:
         test_df = test_df.sample(args.max_test_samples, random_state=42)
 
-    # normalização para PT de reuniões
     train_df["text_norm"] = train_df["text"].apply(lambda t: normalize_text_ptbr(t, allow_numbers, allow_apostrophe))
     valid_df["text_norm"] = valid_df["text"].apply(lambda t: normalize_text_ptbr(t, allow_numbers, allow_apostrophe))
     test_df["text_norm"]  = test_df["text"].apply(lambda t: normalize_text_ptbr(t, allow_numbers, allow_apostrophe))
@@ -236,6 +231,7 @@ def main():
         ctc_loss_reduction="mean",
         ignore_mismatched_sizes=True,
     )
+
     if args.freeze_feature_encoder:
         if hasattr(model, "freeze_feature_encoder"):
             model.freeze_feature_encoder()
@@ -245,7 +241,11 @@ def main():
     model.to(device)
 
     def to_ds(df: pd.DataFrame) -> Dataset:
-        return Dataset.from_pandas(df[["abs_path", "text_norm"]].rename(columns={"abs_path": "audio", "text_norm": "text"}))
+        if "abs_path" not in df.columns:
+            raise RuntimeError("Splits parquet precisa conter coluna abs_path.")
+        return Dataset.from_pandas(
+            df[["abs_path", "text_norm"]].rename(columns={"abs_path": "audio", "text_norm": "text"})
+        )
 
     dsd = DatasetDict({
         "train": to_ds(train_df),
@@ -253,10 +253,15 @@ def main():
         "test": to_ds(test_df),
     })
 
-    audio_cache_dir = Path(args.audio_cache_dir).resolve()
+    media_cache_dir = Path(args.media_cache_dir).resolve()
+    wav_cache_dir = Path(args.wav_cache_dir).resolve()
+    media_cache_dir.mkdir(parents=True, exist_ok=True)
+    wav_cache_dir.mkdir(parents=True, exist_ok=True)
+
     data_collator = DataCollatorCTCOnTheFly(
         processor=processor,
-        cache_dir=audio_cache_dir,
+        media_cache_dir=media_cache_dir,
+        wav_cache_dir=wav_cache_dir,
         padding=True,
         max_audio_seconds=args.max_audio_seconds,
         min_audio_seconds=args.min_audio_seconds,
@@ -265,6 +270,7 @@ def main():
     ta_params = set(inspect.signature(TrainingArguments.__init__).parameters.keys())
     training_kwargs = dict(
         output_dir=str(ckpt_dir),
+
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
@@ -286,6 +292,7 @@ def main():
         report_to=[],
         remove_unused_columns=False,
     )
+
     if "evaluation_strategy" in ta_params:
         training_kwargs["evaluation_strategy"] = "steps"
     elif "eval_strategy" in ta_params:
