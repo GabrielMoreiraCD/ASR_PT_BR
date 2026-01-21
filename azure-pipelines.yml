@@ -13,21 +13,30 @@ steps:
     versionSpec: '$(PYTHON_VERSION)'
 
 - script: |
+    sudo apt-get update
+    sudo apt-get install -y ffmpeg
     python -m pip install --upgrade pip
     pip install -r requirements.txt
-  displayName: 'Install dependencies'
+  displayName: 'Install dependencies & FFmpeg'
 
 - script: |
+    # Passamos o link do onedrive aqui
     python src/prep_dataset.py \
-      --csv_path data/labels/metadata_train_final.csv \
-      --audio_root data/raw_calls \
+      --onedrive_url "$(ONEDRIVE_SHARE_LINK)" \
       --run_dir outputs/asr_runs/run_latest
-  displayName: 'Prepare dataset'
+  displayName: 'Download & Prepare Dataset'
 
 - script: |
     python src/train_asr.py \
       --run_dir outputs/asr_runs/run_latest \
-      --batch_size 1 \
-      --grad_accum 16 \
-      --num_train_epochs 1
+      --batch_size 2 \
+      --grad_accum 8 \
+      --num_train_epochs 3
   displayName: 'Train ASR (CPU)'
+  
+- task: PublishPipelineArtifact@1
+  inputs:
+    targetPath: 'outputs/asr_runs/run_latest/final_model'
+    artifact: 'Wav2Vec2_PTBR_Model'
+    publishLocation: 'pipeline'
+  displayName: 'Publish Model Artifact'

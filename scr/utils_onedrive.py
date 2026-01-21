@@ -1,87 +1,66 @@
 # src/utils_onedrive.py
-
 from __future__ import annotations
-import hashlib
 import os
-from pathlib import Path
-from typing import Optional, Tuple
+import zipfile
 import requests
+from pathlib import Path
+from tqdm import tqdm
 
+def transform_onedrive_url(share_url: str) -> str:
+    # Se o usuário já passar o link com ?download=1 ou download.aspx, retornamos direto
+    if "download.aspx" in share_url or "?download=1" in share_url:
+        return share_url
 
-def _sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+    # Tentativa de transformação padrão para links "Anyone link"
+    # Remove query params
+    base_url = share_url.split("?")[0]
+    
+    # Se terminar com barra, remove
+    if base_url.endswith("/"):
+        base_url = base_url[:-1]
+        
+    # Adiciona o parametro de download
+    download_url = f"{base_url}?download=1"
+    return download_url
 
+def download_and_extract_zip(url: str, dest_folder: Path):
+    """
+    Baixa o ZIP da pasta compartilhada e extrai em dest_folder.
+    """
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    zip_path = dest_folder / "dataset.zip"
+    
+    print(f"[OneDrive] Baixando dataset de: {url}")
+    
+    # Faz o download com stream para não estourar a memória
+    with requests.get(url, stream=True) as r:
+        if r.status_code != 200:
+            print(f"Erro no download. Status: {r.status_code}")
+            print("Conteúdo:", r.text[:200])
+            r.raise_for_status()
+            
+        total_size = int(r.headers.get('content-length', 0))
+        block_size = 1024 * 1024 # 1MB
+        
+        with open(zip_path, "wb") as f, tqdm(
+            desc="Downloading",
+            total=total_size,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
+            for data in r.iter_content(block_size):
+                size = f.write(data)
+                bar.update(size)
 
-def parse_onedrive_uri(uri: str) -> str:
-    if not isinstance(uri, str) or not uri.startswith("onedrive://"):
-        raise ValueError(f"Not an onedrive uri: {uri}")
-    return uri[len("onedrive://") :].lstrip("/")
-
-
-def _get_env(name: str, required: bool = True) -> str:
-    v = os.environ.get(name, "").strip()
-    if required and not v:
-        raise RuntimeError(f"Missing env var: {name}")
-    return v
-
-
-def get_graph_token_client_secret() -> str:
-    tenant_id = _get_env("MS_TENANT_ID")
-    client_id = _get_env("MS_CLIENT_ID")
-    client_secret = _get_env("MS_CLIENT_SECRET")
-
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    data = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": "https://graph.microsoft.com/.default",
-        "grant_type": "client_credentials",
-    }
-    r = requests.post(token_url, data=data, timeout=60)
-    r.raise_for_status()
-    return r.json()["access_token"]
-
-
-def build_drive_item_download_url(drive_id: str, root_folder: str, rel_path: str) -> str:
-    root_folder = (root_folder or "").strip().strip("/")
-    rel_path = rel_path.strip().lstrip("/")
-
-    if root_folder:
-        full = f"{root_folder}/{rel_path}"
-    else:
-        full = rel_path
-
-    return f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{full}:/content"
-
-
-def download_onedrive_to_cache(
-    onedrive_uri: str,
-    cache_dir: Path,
-    token: Optional[str] = None,
-) -> Path:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    rel_path = parse_onedrive_uri(onedrive_uri)
-    ext = Path(rel_path).suffix or ".bin"
-    local_path = cache_dir / f"{_sha1(onedrive_uri)}{ext}"
-
-    if local_path.exists() and local_path.stat().st_size > 0:
-        return local_path
-
-    drive_id = _get_env("ONEDRIVE_DRIVE_ID")
-    root_folder = _get_env("ONEDRIVE_ROOT", required=False)
-
-    if token is None:
-        token = get_graph_token_client_secret()
-
-    url = build_drive_item_download_url(drive_id, root_folder, rel_path)
-    headers = {"Authorization": f"Bearer {token}"}
-
-    with requests.get(url, headers=headers, stream=True, timeout=300) as r:
-        r.raise_for_status()
-        with open(local_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
-
-    return local_path
+    print("[OneDrive] Extraindo arquivos...")
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(dest_folder)
+        print("[OneDrive] Extração concluída.")
+    except zipfile.BadZipFile:
+        print("ERRO: O arquivo baixado não é um ZIP válido. Verifique se o link do OneDrive está correto.")
+        raise
+    finally:
+        if zip_path.exists():
+            os.remove(zip_path)
